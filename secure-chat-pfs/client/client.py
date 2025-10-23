@@ -75,10 +75,13 @@ class SecureChatClient:
 
         # User list
         self.users: List[str] = []
-        
+
         # File transfer tracking
         self.file_transfers: Dict[str, Dict] = {}  # transfer_id -> {chunks, filename, total}
-        
+
+        # Pending group key distributions: peer -> [(group_id, group_name, group_key, members)]
+        self.pending_group_keys: Dict[str, List[tuple]] = {}
+
         # Last ciphertext for demonstration
         self.last_ciphertext: Optional[Dict] = None
         
@@ -318,18 +321,18 @@ class SecureChatClient:
         peer = message.get('from')
         session_id = message.get('session_id')
         pub_key_b64 = message.get('public_key')
-        
+
         if peer not in self.sessions:
             # Create session if not exists
             session = RatchetSession(session_id, auto_ratchet_interval=50)
             self.sessions[peer] = session
-        
+
         session = self.sessions[peer]
-        
+
         # Perform handshake
         peer_pub_key = base64.b64decode(pub_key_b64)
         session.perform_handshake(peer_pub_key)
-        
+
         # Send our public key back if needed
         if session.message_count == 0:
             pub_key_bytes = session.get_public_key_bytes()
@@ -340,13 +343,21 @@ class SecureChatClient:
                 'public_key': base64.b64encode(pub_key_bytes).decode('utf-8'),
                 'session_id': session_id
             })
-        
+
         self.chat_display.add_message(f"Secure session established with {peer}", 'system')
         self.chat_display.add_message(f"Key fingerprint: {session.get_key_fingerprint()}", 'system')
-        
+
         if peer == self.current_peer:
             self.encryption_info.update_fingerprint(session.get_key_fingerprint())
             self.encryption_info.update_ratchet_count(session.ratchet_count)
+
+        # Check if there are pending group keys to distribute to this peer
+        if peer in self.pending_group_keys:
+            self.chat_display.add_message(f"Distributing pending group keys to {peer}...", 'system')
+            for group_data in self.pending_group_keys[peer]:
+                group_id, group_name, group_key, members = group_data
+                self.distribute_group_key(peer, group_id, group_name, group_key, members)
+            del self.pending_group_keys[peer]
     
     def send_message(self, plaintext: str):
         """Encrypt and send message."""
@@ -699,7 +710,15 @@ class SecureChatClient:
         """Distribute group key to a member via encrypted 1-on-1 session."""
         # Ensure we have a session with this user
         if recipient not in self.sessions:
-            self.chat_display.add_message(f"No session with {recipient}, cannot send group key", 'system')
+            self.chat_display.add_message(f"No session with {recipient}, initiating key exchange...", 'system')
+
+            # Store pending group key distribution
+            if recipient not in self.pending_group_keys:
+                self.pending_group_keys[recipient] = []
+            self.pending_group_keys[recipient].append((group_id, group_name, group_key, members))
+
+            # Initiate session with this user
+            self.initiate_session(recipient)
             return
 
         session = self.sessions[recipient]

@@ -253,15 +253,136 @@ def encrypt_file_chunk(aesgcm: AESGCM, chunk_data: bytes) -> Dict[str, str]:
 def decrypt_file_chunk(aesgcm: AESGCM, encrypted_chunk: Dict[str, str]) -> bytes:
     """
     Decrypt a file chunk using AES-GCM.
-    
+
     Args:
         aesgcm: Initialized AES-GCM cipher
         encrypted_chunk: Dictionary with ciphertext and nonce (base64)
-        
+
     Returns:
         Decrypted bytes
     """
     ciphertext = base64.b64decode(encrypted_chunk['ciphertext'])
     nonce = base64.b64decode(encrypted_chunk['nonce'])
-    
+
     return aesgcm.decrypt(nonce, ciphertext, None)
+
+
+class GroupSession:
+    """
+    Manages encrypted group chat session with shared key.
+
+    Key Features:
+    - Shared AES-256 key for all group members
+    - Group key distributed via encrypted 1-on-1 sessions
+    - AES-256-GCM for authenticated encryption
+    """
+
+    def __init__(self, group_id: str, group_name: str):
+        """
+        Initialize a new group session.
+
+        Args:
+            group_id: Unique identifier for this group
+            group_name: Display name for the group
+        """
+        self.group_id = group_id
+        self.group_name = group_name
+
+        # Generate shared group key (256 bits for AES-256)
+        self.group_key: Optional[bytes] = None
+        self.aesgcm: Optional[AESGCM] = None
+
+        # Message counter
+        self.message_count = 0
+
+    def generate_group_key(self) -> bytes:
+        """
+        Generate a new random group key.
+
+        Returns:
+            The generated group key (32 bytes)
+        """
+        self.group_key = os.urandom(32)  # 256 bits
+        self.aesgcm = AESGCM(self.group_key)
+        return self.group_key
+
+    def set_group_key(self, group_key: bytes):
+        """
+        Set the group key (received from creator).
+
+        Args:
+            group_key: 32-byte AES-256 key
+        """
+        self.group_key = group_key
+        self.aesgcm = AESGCM(self.group_key)
+
+    def get_key_fingerprint(self) -> str:
+        """
+        Get truncated SHA-256 hash of group key for display.
+
+        Returns:
+            Hex string of first 8 bytes of key hash
+        """
+        if not self.group_key:
+            return "NO_KEY"
+        key_hash = hashlib.sha256(self.group_key).digest()
+        return key_hash[:8].hex().upper()
+
+    def encrypt(self, plaintext: str) -> Dict[str, Any]:
+        """
+        Encrypt a group message using AES-256-GCM.
+
+        Args:
+            plaintext: Message to encrypt
+
+        Returns:
+            Dictionary with ciphertext (base64), nonce (base64), and metadata
+
+        Raises:
+            ValueError: If group key not set
+        """
+        if not self.group_key or not self.aesgcm:
+            raise ValueError("Group key not set. Cannot encrypt.")
+
+        # Generate random 12-byte nonce
+        nonce = os.urandom(12)
+
+        # Encrypt with AES-GCM
+        ciphertext = self.aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+
+        # Increment message counter
+        self.message_count += 1
+
+        return {
+            'ciphertext': base64.b64encode(ciphertext).decode('utf-8'),
+            'nonce': base64.b64encode(nonce).decode('utf-8'),
+            'message_count': self.message_count
+        }
+
+    def decrypt(self, encrypted_data: Dict[str, Any]) -> str:
+        """
+        Decrypt a group message using AES-256-GCM.
+
+        Args:
+            encrypted_data: Dictionary with ciphertext and nonce (base64)
+
+        Returns:
+            Decrypted plaintext string
+
+        Raises:
+            ValueError: If group key not set or authentication fails
+        """
+        if not self.group_key or not self.aesgcm:
+            raise ValueError("Group key not set. Cannot decrypt.")
+
+        try:
+            # Decode base64
+            ciphertext = base64.b64decode(encrypted_data['ciphertext'])
+            nonce = base64.b64decode(encrypted_data['nonce'])
+
+            # Decrypt and verify authentication tag
+            plaintext_bytes = self.aesgcm.decrypt(nonce, ciphertext, None)
+
+            return plaintext_bytes.decode('utf-8')
+        except Exception as e:
+            raise ValueError(f"Decryption failed: {str(e)}")

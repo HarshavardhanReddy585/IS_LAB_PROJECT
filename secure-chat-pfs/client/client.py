@@ -75,10 +75,13 @@ class SecureChatClient:
 
         # User list
         self.users: List[str] = []
-        
+
         # File transfer tracking
         self.file_transfers: Dict[str, Dict] = {}  # transfer_id -> {chunks, filename, total}
-        
+
+        # Pending group key distributions: peer -> [(group_id, group_name, group_key, members)]
+        self.pending_group_keys: Dict[str, List[tuple]] = {}
+
         # Last ciphertext for demonstration
         self.last_ciphertext: Optional[Dict] = None
         
@@ -245,6 +248,9 @@ class SecureChatClient:
 
         elif msg_type == 'group_key_exchange':
             self.handle_group_key_exchange(message)
+
+        elif msg_type == 'group_file_chunk':
+            self.handle_group_file_chunk(message)
     
     def update_user_list(self, users: List[str]):
         """Update connected users list."""
@@ -318,18 +324,18 @@ class SecureChatClient:
         peer = message.get('from')
         session_id = message.get('session_id')
         pub_key_b64 = message.get('public_key')
-        
+
         if peer not in self.sessions:
             # Create session if not exists
             session = RatchetSession(session_id, auto_ratchet_interval=50)
             self.sessions[peer] = session
-        
+
         session = self.sessions[peer]
-        
+
         # Perform handshake
         peer_pub_key = base64.b64decode(pub_key_b64)
         session.perform_handshake(peer_pub_key)
-        
+
         # Send our public key back if needed
         if session.message_count == 0:
             pub_key_bytes = session.get_public_key_bytes()
@@ -340,13 +346,21 @@ class SecureChatClient:
                 'public_key': base64.b64encode(pub_key_bytes).decode('utf-8'),
                 'session_id': session_id
             })
-        
+
         self.chat_display.add_message(f"Secure session established with {peer}", 'system')
         self.chat_display.add_message(f"Key fingerprint: {session.get_key_fingerprint()}", 'system')
-        
+
         if peer == self.current_peer:
             self.encryption_info.update_fingerprint(session.get_key_fingerprint())
             self.encryption_info.update_ratchet_count(session.ratchet_count)
+
+        # Check if there are pending group keys to distribute to this peer
+        if peer in self.pending_group_keys:
+            self.chat_display.add_message(f"Distributing pending group keys to {peer}...", 'system')
+            for group_data in self.pending_group_keys[peer]:
+                group_id, group_name, group_key, members = group_data
+                self.distribute_group_key(peer, group_id, group_name, group_key, members)
+            del self.pending_group_keys[peer]
     
     def send_message(self, plaintext: str):
         """Encrypt and send message."""
@@ -400,7 +414,8 @@ class SecureChatClient:
             return
 
         if self.current_group not in self.group_sessions:
-            messagebox.showwarning("No Session", "Group key not available")
+            available_groups = list(self.group_sessions.keys())
+            messagebox.showwarning("No Session", f"Group key not available for {self.current_group}.\nAvailable: {available_groups}")
             return
 
         group_session = self.group_sessions[self.current_group]
@@ -423,6 +438,8 @@ class SecureChatClient:
 
         except Exception as e:
             self.chat_display.add_message(f"Encryption error: {e}", 'error')
+            import traceback
+            traceback.print_exc()
     
     def handle_encrypted_message(self, message: Dict):
         """Decrypt and display received message."""
@@ -451,38 +468,66 @@ class SecureChatClient:
     
     def attach_file(self):
         """Attach and send file."""
+        if self.chat_mode == 'user':
+            self.attach_file_to_user()
+        elif self.chat_mode == 'group':
+            self.attach_file_to_group()
+
+    def attach_file_to_user(self):
+        """Attach and send file to user."""
         if not self.current_peer:
             messagebox.showwarning("No Peer", "Please select a user to send file to")
             return
-        
+
         filepath = filedialog.askopenfilename(title="Select file to send")
         if not filepath:
             return
-        
+
         filename = os.path.basename(filepath)
         filesize = os.path.getsize(filepath)
-        
+
         self.chat_display.add_message(f"Sending file: {filename} ({filesize} bytes)", 'system')
-        
+
         # Send file in chunks
-        threading.Thread(target=self.send_file, args=(filepath,), daemon=True).start()
+        threading.Thread(target=self.send_file_to_user, args=(filepath,), daemon=True).start()
+
+    def attach_file_to_group(self):
+        """Attach and send file to group."""
+        if not self.current_group:
+            messagebox.showwarning("No Group", "Please select a group to send file to")
+            return
+
+        if self.current_group not in self.group_sessions:
+            messagebox.showwarning("No Session", "Group key not available")
+            return
+
+        filepath = filedialog.askopenfilename(title="Select file to send to group")
+        if not filepath:
+            return
+
+        filename = os.path.basename(filepath)
+        filesize = os.path.getsize(filepath)
+
+        self.chat_display.add_message(f"Sending file to group: {filename} ({filesize} bytes)", 'system')
+
+        # Send file in chunks
+        threading.Thread(target=self.send_file_to_group, args=(filepath,), daemon=True).start()
     
-    def send_file(self, filepath: str):
-        """Send file in encrypted chunks."""
+    def send_file_to_user(self, filepath: str):
+        """Send file in encrypted chunks to user."""
         if self.current_peer not in self.sessions:
             return
-        
+
         session = self.sessions[self.current_peer]
         filename = os.path.basename(filepath)
         filesize = os.path.getsize(filepath)
         total_chunks = (filesize + FILE_CHUNK_SIZE - 1) // FILE_CHUNK_SIZE
-        
+
         transfer_id = f"{self.username}:{int(time.time())}"
-        
+
         # Show progress dialog
-        progress_dialog = None
         self.root.after(0, lambda: self._create_progress_dialog(filename, total_chunks))
-        
+
         try:
             with open(filepath, 'rb') as f:
                 chunk_num = 0
@@ -490,10 +535,10 @@ class SecureChatClient:
                     chunk_data = f.read(FILE_CHUNK_SIZE)
                     if not chunk_data:
                         break
-                    
+
                     # Encrypt chunk
                     encrypted_chunk = encrypt_file_chunk(session.aesgcm, chunk_data)
-                    
+
                     # Send chunk
                     self.send_to_server({
                         'type': 'file_chunk',
@@ -505,14 +550,60 @@ class SecureChatClient:
                         'total_chunks': total_chunks,
                         'encrypted': encrypted_chunk
                     })
-                    
+
                     chunk_num += 1
                     time.sleep(0.05)  # Small delay to avoid overwhelming
-            
+
             self.chat_display.add_message(f"File sent: {filename}", 'system')
-            
+
         except Exception as e:
             self.chat_display.add_message(f"File send error: {e}", 'error')
+
+    def send_file_to_group(self, filepath: str):
+        """Send file in encrypted chunks to group."""
+        if self.current_group not in self.group_sessions:
+            return
+
+        group_session = self.group_sessions[self.current_group]
+        filename = os.path.basename(filepath)
+        filesize = os.path.getsize(filepath)
+        total_chunks = (filesize + FILE_CHUNK_SIZE - 1) // FILE_CHUNK_SIZE
+
+        transfer_id = f"{self.username}:group:{int(time.time())}"
+
+        # Show progress dialog
+        self.root.after(0, lambda: self._create_progress_dialog(filename, total_chunks))
+
+        try:
+            with open(filepath, 'rb') as f:
+                chunk_num = 0
+                while True:
+                    chunk_data = f.read(FILE_CHUNK_SIZE)
+                    if not chunk_data:
+                        break
+
+                    # Encrypt chunk with group key
+                    encrypted_chunk = encrypt_file_chunk(group_session.aesgcm, chunk_data)
+
+                    # Send chunk to group
+                    self.send_to_server({
+                        'type': 'group_file_chunk',
+                        'from': self.username,
+                        'group_id': self.current_group,
+                        'transfer_id': transfer_id,
+                        'filename': filename,
+                        'chunk_num': chunk_num,
+                        'total_chunks': total_chunks,
+                        'encrypted': encrypted_chunk
+                    })
+
+                    chunk_num += 1
+                    time.sleep(0.05)  # Small delay to avoid overwhelming
+
+            self.chat_display.add_message(f"File sent to group: {filename}", 'system')
+
+        except Exception as e:
+            self.chat_display.add_message(f"Group file send error: {e}", 'error')
     
     def _create_progress_dialog(self, filename: str, total_chunks: int):
         """Create file transfer progress dialog."""
@@ -699,7 +790,15 @@ class SecureChatClient:
         """Distribute group key to a member via encrypted 1-on-1 session."""
         # Ensure we have a session with this user
         if recipient not in self.sessions:
-            self.chat_display.add_message(f"No session with {recipient}, cannot send group key", 'system')
+            self.chat_display.add_message(f"No session with {recipient}, initiating key exchange...", 'system')
+
+            # Store pending group key distribution
+            if recipient not in self.pending_group_keys:
+                self.pending_group_keys[recipient] = []
+            self.pending_group_keys[recipient].append((group_id, group_name, group_key, members))
+
+            # Initiate session with this user
+            self.initiate_session(recipient)
             return
 
         session = self.sessions[recipient]
@@ -766,11 +865,22 @@ class SecureChatClient:
             group_session.set_group_key(group_key)
             self.group_sessions[group_id] = group_session
 
-            self.chat_display.add_message(f"Received group key for '{group_name}' from {sender}", 'system')
+            self.chat_display.add_message(f"✓ Received group key for '{group_name}' from {sender}", 'system')
             self.chat_display.add_message(f"Group fingerprint: {group_session.get_key_fingerprint()}", 'system')
+            self.chat_display.add_message(f"Members: {', '.join(members)}", 'system')
+
+            # Join the group on the server side
+            self.send_to_server({
+                'type': 'join_group',
+                'group_id': group_id
+            })
+
+            self.chat_display.add_message(f"✓ Joined group '{group_name}' - You can now send messages!", 'system')
 
         except Exception as e:
             self.chat_display.add_message(f"Error receiving group key: {e}", 'error')
+            import traceback
+            traceback.print_exc()
 
     def handle_group_message(self, message: Dict):
         """Handle incoming group message."""
@@ -793,6 +903,45 @@ class SecureChatClient:
 
         except Exception as e:
             self.chat_display.add_message(f"Group decryption error: {e}", 'error')
+
+    def handle_group_file_chunk(self, message: Dict):
+        """Handle incoming group file chunk."""
+        sender = message.get('from')
+        group_id = message.get('group_id')
+        transfer_id = message.get('transfer_id')
+        filename = message.get('filename')
+        chunk_num = message.get('chunk_num')
+        total_chunks = message.get('total_chunks')
+        encrypted_chunk = message.get('encrypted')
+
+        if group_id not in self.group_sessions:
+            self.chat_display.add_message(f"No session for group {group_id}", 'error')
+            return
+
+        group_session = self.group_sessions[group_id]
+
+        # Initialize transfer if new
+        if transfer_id not in self.file_transfers:
+            self.file_transfers[transfer_id] = {
+                'filename': filename,
+                'chunks': {},
+                'total': total_chunks
+            }
+            self.chat_display.add_message(f"Receiving file from group: {filename} (from {sender})", 'system')
+
+        transfer = self.file_transfers[transfer_id]
+
+        try:
+            # Decrypt chunk
+            decrypted_chunk = decrypt_file_chunk(group_session.aesgcm, encrypted_chunk)
+            transfer['chunks'][chunk_num] = decrypted_chunk
+
+            # Check if complete
+            if len(transfer['chunks']) == total_chunks:
+                self.save_received_file(transfer_id)
+
+        except Exception as e:
+            self.chat_display.add_message(f"Group file chunk decryption error: {e}", 'error')
     
     def update_status(self, message: str, connected: bool):
         """Update status bar."""

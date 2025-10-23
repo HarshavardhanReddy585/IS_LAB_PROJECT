@@ -28,10 +28,11 @@ from cryptography.hazmat.backends import default_backend
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from crypto.crypto_utils import RatchetSession, encrypt_file_chunk, decrypt_file_chunk
+from crypto.crypto_utils import RatchetSession, GroupSession, encrypt_file_chunk, decrypt_file_chunk
 from ui_components import (
     UserListFrame, ChatDisplayFrame, MessageInputFrame,
-    EncryptionInfoFrame, StatusBar, CiphertextDialog, FileTransferDialog
+    EncryptionInfoFrame, StatusBar, CiphertextDialog, FileTransferDialog,
+    CreateGroupDialog, GroupUserListFrame
 )
 
 
@@ -63,7 +64,15 @@ class SecureChatClient:
         # Crypto sessions: peer_username -> RatchetSession
         self.sessions: Dict[str, RatchetSession] = {}
         self.current_peer: Optional[str] = None
-        
+
+        # Group sessions: group_id -> GroupSession
+        self.group_sessions: Dict[str, GroupSession] = {}
+        self.current_group: Optional[str] = None
+        self.groups: List[Dict] = []  # List of group info dicts
+
+        # Current chat mode: 'user' or 'group'
+        self.chat_mode: str = 'user'
+
         # User list
         self.users: List[str] = []
         
@@ -88,9 +97,14 @@ class SecureChatClient:
         main_frame = tk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Left side - User list
-        self.user_list = UserListFrame(main_frame, self.on_user_select)
-        self.user_list.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        # Left side - User and Group list
+        self.user_group_list = GroupUserListFrame(
+            main_frame,
+            self.on_user_select,
+            self.on_group_select,
+            self.open_create_group_dialog
+        )
+        self.user_group_list.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
         
         # Right side
         right_frame = tk.Frame(main_frame)
@@ -219,17 +233,31 @@ class SecureChatClient:
         
         elif msg_type == 'ratchet':
             self.handle_ratchet(message)
+
+        elif msg_type == 'group_list':
+            self.handle_group_list(message)
+
+        elif msg_type == 'group_created':
+            self.handle_group_created(message)
+
+        elif msg_type == 'group_message':
+            self.handle_group_message(message)
+
+        elif msg_type == 'group_key_exchange':
+            self.handle_group_key_exchange(message)
     
     def update_user_list(self, users: List[str]):
         """Update connected users list."""
         self.users = users
-        self.root.after(0, lambda: self.user_list.update_users(users, self.username))
+        self.root.after(0, lambda: self.user_group_list.update_users(users, self.username))
     
     def on_user_select(self, username: str):
         """Handle user selection."""
+        self.chat_mode = 'user'
         self.current_peer = username
+        self.current_group = None
         self.chat_display.add_message(f"\n--- Chat with {username} ---", 'system')
-        
+
         # Initialize or get session
         if username not in self.sessions:
             self.initiate_session(username)
@@ -238,7 +266,31 @@ class SecureChatClient:
             self.encryption_info.update_fingerprint(session.get_key_fingerprint())
             self.encryption_info.update_ratchet_count(session.ratchet_count)
             self.encryption_info.update_session_id(session.session_id)
-        
+
+        self.message_input.set_enabled(True)
+
+    def on_group_select(self, group_index: int):
+        """Handle group selection."""
+        if group_index >= len(self.groups):
+            return
+
+        group = self.groups[group_index]
+        group_id = group['group_id']
+
+        self.chat_mode = 'group'
+        self.current_group = group_id
+        self.current_peer = None
+
+        self.chat_display.add_message(f"\n--- Group: {group['name']} ---", 'system')
+        self.chat_display.add_message(f"Members: {', '.join(group['members'])}", 'system')
+
+        # Show group encryption info if session exists
+        if group_id in self.group_sessions:
+            group_session = self.group_sessions[group_id]
+            self.encryption_info.update_fingerprint(group_session.get_key_fingerprint())
+            self.encryption_info.update_ratchet_count(0)  # Groups don't ratchet
+            self.encryption_info.update_session_id(group_id)
+
         self.message_input.set_enabled(True)
     
     def initiate_session(self, peer: str):
@@ -298,21 +350,28 @@ class SecureChatClient:
     
     def send_message(self, plaintext: str):
         """Encrypt and send message."""
+        if self.chat_mode == 'user':
+            self.send_user_message(plaintext)
+        elif self.chat_mode == 'group':
+            self.send_group_message(plaintext)
+
+    def send_user_message(self, plaintext: str):
+        """Encrypt and send message to user."""
         if not self.current_peer:
             messagebox.showwarning("No Peer", "Please select a user to chat with")
             return
-        
+
         if self.current_peer not in self.sessions:
             messagebox.showwarning("No Session", "Waiting for key exchange...")
             return
-        
+
         session = self.sessions[self.current_peer]
-        
+
         try:
             # Encrypt message
             encrypted_data = session.encrypt(plaintext)
             self.last_ciphertext = encrypted_data  # Save for demonstration
-            
+
             # Send encrypted message
             self.send_to_server({
                 'type': 'message',
@@ -320,17 +379,48 @@ class SecureChatClient:
                 'to': self.current_peer,
                 'encrypted': encrypted_data
             })
-            
+
             # Display in chat
             self.chat_display.add_message(f"You: {plaintext}", 'sent')
-            
+
             # Update encryption info
             self.encryption_info.update_ratchet_count(session.ratchet_count)
-            
+
             # Check if auto-ratchet needed
             if encrypted_data.get('needs_ratchet'):
                 self.perform_ratchet(self.current_peer)
-            
+
+        except Exception as e:
+            self.chat_display.add_message(f"Encryption error: {e}", 'error')
+
+    def send_group_message(self, plaintext: str):
+        """Encrypt and send message to group."""
+        if not self.current_group:
+            messagebox.showwarning("No Group", "Please select a group to chat with")
+            return
+
+        if self.current_group not in self.group_sessions:
+            messagebox.showwarning("No Session", "Group key not available")
+            return
+
+        group_session = self.group_sessions[self.current_group]
+
+        try:
+            # Encrypt message
+            encrypted_data = group_session.encrypt(plaintext)
+            self.last_ciphertext = encrypted_data  # Save for demonstration
+
+            # Send encrypted group message
+            self.send_to_server({
+                'type': 'group_message',
+                'from': self.username,
+                'group_id': self.current_group,
+                'encrypted': encrypted_data
+            })
+
+            # Display in chat
+            self.chat_display.add_message(f"You: {plaintext}", 'sent')
+
         except Exception as e:
             self.chat_display.add_message(f"Encryption error: {e}", 'error')
     
@@ -569,8 +659,140 @@ class SecureChatClient:
         if not self.last_ciphertext:
             messagebox.showinfo("No Ciphertext", "Send a message first to see ciphertext")
             return
-        
+
         CiphertextDialog(self.root, "Raw Ciphertext (Wireshark View)", self.last_ciphertext)
+
+    def open_create_group_dialog(self):
+        """Open dialog to create a new group."""
+        if not self.users:
+            messagebox.showinfo("No Users", "No other users available to create a group")
+            return
+
+        CreateGroupDialog(self.root, self.users, self.create_group)
+
+    def create_group(self, group_name: str, members: List[str]):
+        """Create a new group."""
+        # Generate group ID
+        group_id = f"group_{self.username}_{int(time.time())}"
+
+        # Create group session and generate key
+        group_session = GroupSession(group_id, group_name)
+        group_key = group_session.generate_group_key()
+        self.group_sessions[group_id] = group_session
+
+        self.chat_display.add_message(f"Creating group: {group_name}", 'system')
+
+        # Send create group request to server
+        self.send_to_server({
+            'type': 'create_group',
+            'group_id': group_id,
+            'group_name': group_name,
+            'members': members
+        })
+
+        # Distribute group key to each member via encrypted 1-on-1 session
+        for member in members:
+            if member != self.username:
+                self.distribute_group_key(member, group_id, group_name, group_key, members)
+
+    def distribute_group_key(self, recipient: str, group_id: str, group_name: str, group_key: bytes, members: List[str]):
+        """Distribute group key to a member via encrypted 1-on-1 session."""
+        # Ensure we have a session with this user
+        if recipient not in self.sessions:
+            self.chat_display.add_message(f"No session with {recipient}, cannot send group key", 'system')
+            return
+
+        session = self.sessions[recipient]
+
+        try:
+            # Encrypt the group key and metadata using 1-on-1 session
+            group_data = {
+                'group_id': group_id,
+                'group_name': group_name,
+                'group_key': base64.b64encode(group_key).decode('utf-8'),
+                'members': members
+            }
+            group_data_json = json.dumps(group_data)
+            encrypted_key_data = session.encrypt(group_data_json)
+
+            # Send via server
+            self.send_to_server({
+                'type': 'group_key_exchange',
+                'from': self.username,
+                'to': recipient,
+                'encrypted': encrypted_key_data
+            })
+
+            self.chat_display.add_message(f"Sent group key to {recipient}", 'system')
+
+        except Exception as e:
+            self.chat_display.add_message(f"Error distributing key to {recipient}: {e}", 'error')
+
+    def handle_group_created(self, message: Dict):
+        """Handle group creation confirmation."""
+        group_name = message.get('group_name')
+        self.chat_display.add_message(f"Group '{group_name}' created successfully!", 'system')
+
+    def handle_group_list(self, message: Dict):
+        """Handle updated group list from server."""
+        groups = message.get('groups', [])
+        self.groups = groups
+        self.root.after(0, lambda: self.user_group_list.update_groups(groups))
+
+    def handle_group_key_exchange(self, message: Dict):
+        """Handle incoming encrypted group key."""
+        sender = message.get('from')
+        encrypted_data = message.get('encrypted')
+
+        if sender not in self.sessions:
+            self.chat_display.add_message(f"No session with {sender} for group key", 'error')
+            return
+
+        session = self.sessions[sender]
+
+        try:
+            # Decrypt group key data
+            decrypted_json = session.decrypt(encrypted_data)
+            group_data = json.loads(decrypted_json)
+
+            group_id = group_data['group_id']
+            group_name = group_data['group_name']
+            group_key_b64 = group_data['group_key']
+            members = group_data['members']
+
+            # Create group session with received key
+            group_session = GroupSession(group_id, group_name)
+            group_key = base64.b64decode(group_key_b64)
+            group_session.set_group_key(group_key)
+            self.group_sessions[group_id] = group_session
+
+            self.chat_display.add_message(f"Received group key for '{group_name}' from {sender}", 'system')
+            self.chat_display.add_message(f"Group fingerprint: {group_session.get_key_fingerprint()}", 'system')
+
+        except Exception as e:
+            self.chat_display.add_message(f"Error receiving group key: {e}", 'error')
+
+    def handle_group_message(self, message: Dict):
+        """Handle incoming group message."""
+        group_id = message.get('group_id')
+        sender = message.get('from')
+        encrypted_data = message.get('encrypted')
+
+        if group_id not in self.group_sessions:
+            self.chat_display.add_message(f"No session for group {group_id}", 'error')
+            return
+
+        group_session = self.group_sessions[group_id]
+
+        try:
+            # Decrypt message
+            plaintext = group_session.decrypt(encrypted_data)
+
+            # Display in chat
+            self.chat_display.add_message(f"{sender}: {plaintext}", 'received')
+
+        except Exception as e:
+            self.chat_display.add_message(f"Group decryption error: {e}", 'error')
     
     def update_status(self, message: str, connected: bool):
         """Update status bar."""

@@ -87,6 +87,12 @@ class ClientHandler:
         - 'key_exchange': Public key exchange
         - 'ratchet': Ratchet notification
         - 'list_users': Request user list
+        - 'create_group': Create a new group
+        - 'join_group': Join an existing group
+        - 'leave_group': Leave a group
+        - 'group_message': Message to a group
+        - 'list_groups': Request group list
+        - 'group_key_exchange': Encrypted group key distribution
         """
         msg_type = message.get('type')
         
@@ -102,6 +108,18 @@ class ClientHandler:
             self.handle_ratchet(message)
         elif msg_type == 'list_users':
             self.handle_list_users()
+        elif msg_type == 'create_group':
+            self.handle_create_group(message)
+        elif msg_type == 'join_group':
+            self.handle_join_group(message)
+        elif msg_type == 'leave_group':
+            self.handle_leave_group(message)
+        elif msg_type == 'group_message':
+            self.handle_group_message(message)
+        elif msg_type == 'list_groups':
+            self.handle_list_groups()
+        elif msg_type == 'group_key_exchange':
+            self.handle_group_key_exchange(message)
         else:
             print(f"[SERVER] Unknown message type: {msg_type}")
     
@@ -161,6 +179,77 @@ class ClientHandler:
             'users': users,
             'timestamp': time.time()
         })
+
+    def handle_create_group(self, message: Dict):
+        """Create a new group."""
+        group_name = message.get('group_name')
+        group_id = message.get('group_id')
+        members = message.get('members', [])
+
+        if not group_name or not group_id:
+            return
+
+        # Add creator to members
+        if self.username and self.username not in members:
+            members.append(self.username)
+
+        self.server.create_group(group_id, group_name, self.username, members)
+        print(f"[SERVER] Group created: {group_name} by {self.username}")
+
+        # Send confirmation to creator
+        self.send_message({
+            'type': 'group_created',
+            'group_id': group_id,
+            'group_name': group_name,
+            'members': members,
+            'timestamp': time.time()
+        })
+
+        # Notify all members
+        self.server.broadcast_group_list()
+
+    def handle_join_group(self, message: Dict):
+        """Join an existing group."""
+        group_id = message.get('group_id')
+
+        if group_id and self.username:
+            success = self.server.add_to_group(group_id, self.username)
+            if success:
+                print(f"[SERVER] {self.username} joined group {group_id}")
+                self.server.broadcast_group_list()
+
+    def handle_leave_group(self, message: Dict):
+        """Leave a group."""
+        group_id = message.get('group_id')
+
+        if group_id and self.username:
+            success = self.server.remove_from_group(group_id, self.username)
+            if success:
+                print(f"[SERVER] {self.username} left group {group_id}")
+                self.server.broadcast_group_list()
+
+    def handle_group_message(self, message: Dict):
+        """Broadcast encrypted message to all group members."""
+        group_id = message.get('group_id')
+        sender = message.get('from')
+
+        print(f"[SERVER] Broadcasting group message: {sender} -> group {group_id}")
+        self.server.broadcast_to_group(group_id, message, exclude=sender)
+
+    def handle_list_groups(self):
+        """Send current group list to client."""
+        groups = self.server.get_group_list(self.username)
+        self.send_message({
+            'type': 'group_list',
+            'groups': groups,
+            'timestamp': time.time()
+        })
+
+    def handle_group_key_exchange(self, message: Dict):
+        """Forward encrypted group key to specific member."""
+        recipient = message.get('to')
+        print(f"[SERVER] Forwarding group key: {self.username} -> {recipient}")
+        self.server.route_message(recipient, message)
     
     def send_message(self, message: Dict):
         """Send JSON message to this client."""
@@ -194,11 +283,15 @@ class ChatServer:
         self.port = port
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
+
         # Client registry: username -> ClientHandler
         self.clients: Dict[str, ClientHandler] = {}
         self.clients_lock = threading.Lock()
-        
+
+        # Group registry: group_id -> {name, creator, members: [usernames]}
+        self.groups: Dict[str, Dict] = {}
+        self.groups_lock = threading.Lock()
+
         self.running = False
     
     def start(self):
@@ -262,7 +355,86 @@ class ChatServer:
         """Get list of currently connected users."""
         with self.clients_lock:
             return list(self.clients.keys())
-    
+
+    def create_group(self, group_id: str, group_name: str, creator: str, members: list):
+        """Create a new group."""
+        with self.groups_lock:
+            self.groups[group_id] = {
+                'name': group_name,
+                'creator': creator,
+                'members': list(set(members))  # Ensure unique members
+            }
+
+    def add_to_group(self, group_id: str, username: str) -> bool:
+        """Add user to group."""
+        with self.groups_lock:
+            if group_id in self.groups:
+                if username not in self.groups[group_id]['members']:
+                    self.groups[group_id]['members'].append(username)
+                return True
+            return False
+
+    def remove_from_group(self, group_id: str, username: str) -> bool:
+        """Remove user from group."""
+        with self.groups_lock:
+            if group_id in self.groups:
+                if username in self.groups[group_id]['members']:
+                    self.groups[group_id]['members'].remove(username)
+                return True
+            return False
+
+    def get_group_list(self, username: Optional[str] = None) -> list:
+        """Get list of groups (optionally filtered by member)."""
+        with self.groups_lock:
+            if username:
+                # Return groups this user is a member of
+                return [
+                    {
+                        'group_id': gid,
+                        'name': gdata['name'],
+                        'creator': gdata['creator'],
+                        'members': gdata['members']
+                    }
+                    for gid, gdata in self.groups.items()
+                    if username in gdata['members']
+                ]
+            else:
+                # Return all groups
+                return [
+                    {
+                        'group_id': gid,
+                        'name': gdata['name'],
+                        'creator': gdata['creator'],
+                        'members': gdata['members']
+                    }
+                    for gid, gdata in self.groups.items()
+                ]
+
+    def broadcast_to_group(self, group_id: str, message: Dict, exclude: Optional[str] = None):
+        """Broadcast message to all group members."""
+        with self.groups_lock:
+            if group_id not in self.groups:
+                return
+
+            members = self.groups[group_id]['members']
+
+        # Send to each member
+        with self.clients_lock:
+            for member in members:
+                if member != exclude and member in self.clients:
+                    self.clients[member].send_message(message)
+
+    def broadcast_group_list(self):
+        """Broadcast updated group list to all clients."""
+        with self.clients_lock:
+            for username, handler in self.clients.items():
+                groups = self.get_group_list(username)
+                handler.send_message({
+                    'type': 'group_list',
+                    'groups': groups,
+                    'timestamp': time.time()
+                })
+
     def stop(self):
         """Stop the server."""
         self.running = False

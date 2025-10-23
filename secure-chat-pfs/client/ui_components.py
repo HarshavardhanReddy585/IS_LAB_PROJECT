@@ -11,7 +11,7 @@ Provides reusable widgets for:
 
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
-from typing import Callable, Optional, List
+from typing import Callable, Optional, List, Dict
 
 
 class UserListFrame(ttk.LabelFrame):
@@ -217,35 +217,173 @@ class CiphertextDialog:
 
 class FileTransferDialog:
     """Dialog showing file transfer progress."""
-    
+
     def __init__(self, parent, filename: str, total_chunks: int):
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Transferring: {filename}")
         self.dialog.geometry("400x150")
-        
+
         ttk.Label(self.dialog, text=f"Transferring: {filename}").pack(pady=10)
-        
+
         # Progress bar
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(
-            self.dialog, 
-            variable=self.progress_var, 
+            self.dialog,
+            variable=self.progress_var,
             maximum=100,
             length=350
         )
         self.progress_bar.pack(pady=10)
-        
+
         # Status label
         self.status_var = tk.StringVar(value="Chunk 0 / {total_chunks}")
         ttk.Label(self.dialog, textvariable=self.status_var).pack(pady=5)
-        
+
         self.total_chunks = total_chunks
-    
+
     def update_progress(self, current_chunk: int):
         """Update progress bar."""
         progress = (current_chunk / self.total_chunks) * 100
         self.progress_var.set(progress)
         self.status_var.set(f"Chunk {current_chunk} / {self.total_chunks}")
-        
+
         if current_chunk >= self.total_chunks:
             self.dialog.after(1000, self.dialog.destroy)
+
+
+class CreateGroupDialog:
+    """Dialog for creating a new group."""
+
+    def __init__(self, parent, available_users: List[str], on_create: Callable):
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Create Group")
+        self.dialog.geometry("400x400")
+        self.on_create = on_create
+
+        # Group name
+        ttk.Label(self.dialog, text="Group Name:").pack(pady=(10, 5))
+        self.name_entry = ttk.Entry(self.dialog, width=40)
+        self.name_entry.pack(pady=5)
+
+        # Members selection
+        ttk.Label(self.dialog, text="Select Members:").pack(pady=(10, 5))
+
+        # Scrollable frame for checkboxes
+        members_frame = ttk.Frame(self.dialog)
+        members_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        canvas = tk.Canvas(members_frame, height=200)
+        scrollbar = ttk.Scrollbar(members_frame, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Create checkboxes for each user
+        self.member_vars = {}
+        for user in available_users:
+            var = tk.BooleanVar(value=False)
+            self.member_vars[user] = var
+            ttk.Checkbutton(scrollable_frame, text=user, variable=var).pack(anchor=tk.W, pady=2)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Buttons
+        btn_frame = ttk.Frame(self.dialog)
+        btn_frame.pack(pady=10)
+
+        ttk.Button(btn_frame, text="Create", command=self._on_create).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _on_create(self):
+        """Handle create button."""
+        group_name = self.name_entry.get().strip()
+        if not group_name:
+            messagebox.showwarning("Invalid Name", "Please enter a group name")
+            return
+
+        # Get selected members
+        selected_members = [user for user, var in self.member_vars.items() if var.get()]
+
+        if len(selected_members) < 1:
+            messagebox.showwarning("No Members", "Please select at least one member")
+            return
+
+        self.on_create(group_name, selected_members)
+        self.dialog.destroy()
+
+
+class GroupUserListFrame(ttk.LabelFrame):
+    """Combined display for users and groups."""
+
+    def __init__(self, parent, on_user_select: Callable[[str]], on_group_select: Callable[[str]], on_create_group: Callable):
+        super().__init__(parent, text="Users & Groups", padding=5)
+        self.on_user_select = on_user_select
+        self.on_group_select = on_group_select
+
+        # Create group button
+        ttk.Button(self, text="Create Group", command=on_create_group).pack(fill=tk.X, pady=(0, 5))
+
+        # Users section
+        ttk.Label(self, text="Users:", font=('Arial', 9, 'bold')).pack(anchor=tk.W, pady=(5, 2))
+        self.user_listbox = tk.Listbox(self, height=8, width=20)
+        self.user_listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+        self.user_listbox.bind('<<ListboxSelect>>', self._on_user_select)
+
+        # Groups section
+        ttk.Label(self, text="Groups:", font=('Arial', 9, 'bold')).pack(anchor=tk.W, pady=(5, 2))
+        self.group_listbox = tk.Listbox(self, height=8, width=20)
+        self.group_listbox.pack(fill=tk.BOTH, expand=True)
+        self.group_listbox.bind('<<ListboxSelect>>', self._on_group_select)
+
+        self.selected_type: Optional[str] = None  # 'user' or 'group'
+        self.selected_id: Optional[str] = None
+
+    def update_users(self, users: List[str], current_user: str):
+        """Update user list (exclude current user)."""
+        self.user_listbox.delete(0, tk.END)
+        for user in users:
+            if user != current_user:
+                self.user_listbox.insert(tk.END, user)
+
+    def update_groups(self, groups: List[Dict]):
+        """Update group list."""
+        self.group_listbox.delete(0, tk.END)
+        for group in groups:
+            display_name = f"{group['name']} ({len(group['members'])})"
+            self.group_listbox.insert(tk.END, display_name)
+
+    def _on_user_select(self, event):
+        """Handle user selection."""
+        selection = self.user_listbox.curselection()
+        if selection:
+            # Clear group selection
+            self.group_listbox.selection_clear(0, tk.END)
+
+            username = self.user_listbox.get(selection[0])
+            self.selected_type = 'user'
+            self.selected_id = username
+            self.on_user_select(username)
+
+    def _on_group_select(self, event):
+        """Handle group selection."""
+        selection = self.group_listbox.curselection()
+        if selection:
+            # Clear user selection
+            self.user_listbox.selection_clear(0, tk.END)
+
+            # Extract group name from display (format: "name (count)")
+            display_text = self.group_listbox.get(selection[0])
+            # Note: We'll need to pass group_id from client, for now use index
+            self.selected_type = 'group'
+            self.on_group_select(selection[0])
+
+    def get_selected(self) -> tuple:
+        """Get currently selected item (type, id)."""
+        return (self.selected_type, self.selected_id)

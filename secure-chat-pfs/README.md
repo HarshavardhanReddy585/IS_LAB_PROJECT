@@ -35,6 +35,7 @@ A comprehensive implementation of a secure multi-user chat system demonstrating 
 - **Ciphertext inspection** for educational purposes
 - **File transfer** with progress indication
 - **Multi-user support** with independent sessions
+- **Group chat** with encrypted messaging for multiple participants
 
 ### Demonstration Features
 - **Wireshark integration** for traffic analysis
@@ -49,16 +50,16 @@ secure-chat-pfs/
 │
 ├── crypto/                    # Cryptographic operations
 │   ├── __init__.py
-│   └── crypto_utils.py       # RatchetSession, encryption/decryption
+│   └── crypto_utils.py       # RatchetSession, GroupSession, encryption/decryption
 │
 ├── server/                    # Relay server (untrusted)
 │   ├── __init__.py
-│   └── server.py             # TCP relay, message routing
+│   └── server.py             # TCP relay, message routing, group management
 │
 ├── client/                    # GUI client application
 │   ├── __init__.py
-│   ├── client.py             # Main application logic
-│   └── ui_components.py      # Tkinter widgets
+│   ├── client.py             # Main application logic (with group chat support)
+│   └── ui_components.py      # Tkinter widgets (including group UI)
 │
 ├── tests/                     # Unit tests
 │   ├── __init__.py
@@ -132,11 +133,21 @@ python3 client.py Bob
 
 ### 4. Start Chatting
 
+**One-on-One Chat:**
 1. In Alice's window: Click "Bob" in user list
 2. In Bob's window: Click "Alice" in user list
 3. Wait for automatic key exchange
 4. Verify key fingerprints match in both windows
 5. Start sending encrypted messages!
+
+**Group Chat:**
+1. In Alice's window: Click "Create Group" button
+2. Enter a group name (e.g., "Team Chat")
+3. Select members to add (e.g., Bob, Charlie)
+4. Click "Create" - Alice generates a shared group key
+5. Group keys are distributed to members via encrypted 1-on-1 sessions
+6. All members can now select the group and send encrypted messages
+7. Messages are encrypted with the shared group key (AES-256-GCM)
 
 ## 🔐 Security Architecture
 

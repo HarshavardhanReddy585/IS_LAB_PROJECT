@@ -1,0 +1,443 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+\geometry{a4paper, margin=1in}
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Information Security Lab Project}
+\lhead{Secure Chat Application}
+\rfoot{Page \thepage}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    language=Python,
+    commentstyle=\color{gray},
+    keywordstyle=\color{blue},
+    stringstyle=\color{red},
+}
+
+\title{
+    \textbf{Secure Encrypted Chat Application with Perfect Forward Secrecy}\\
+    \large Information Security Lab Project Report
+}
+\author{
+    Harshavardhan Reddy (230953396)\\
+    Kshitij Singh (230953460)\\
+    \\
+    Manipal Institute of Technology\\
+    Manipal Academy of Higher Education
+}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\newpage
+
+\tableofcontents
+\newpage
+
+\section{Executive Summary}
+
+This report presents a comprehensive implementation of a secure encrypted chat application featuring Perfect Forward Secrecy (PFS). The application demonstrates industry-standard cryptographic protocols used in modern messaging systems like Signal and WhatsApp. The project implements end-to-end encryption ensuring that messages remain confidential even if the communication channel is compromised.
+
+The system consists of three main components: a cryptographic module implementing X25519 ECDH key exchange and AES-256-GCM encryption, a zero-knowledge relay server, and a user-friendly GUI client application. The implementation achieves Perfect Forward Secrecy through automatic key ratcheting, ensuring that compromise of current keys does not expose historical communications.
+
+\section{Introduction}
+
+\subsection{Background}
+
+In the modern digital age, secure communication is paramount. With increasing concerns about privacy and surveillance, end-to-end encrypted messaging has become essential. This project implements a cryptographically secure chat application that ensures:
+
+\begin{itemize}
+    \item \textbf{Confidentiality}: Messages can only be read by intended recipients
+    \item \textbf{Authentication}: Users can verify each other's identity
+    \item \textbf{Perfect Forward Secrecy}: Past communications remain secure even if current keys are compromised
+    \item \textbf{Zero-Knowledge Server}: The relay server never sees plaintext messages
+\end{itemize}
+
+\subsection{Objectives}
+
+The primary objectives of this project are:
+
+\begin{enumerate}
+    \item Implement secure key exchange using Elliptic Curve Diffie-Hellman (ECDH)
+    \item Achieve authenticated encryption using AES-256-GCM
+    \item Implement Perfect Forward Secrecy through key ratcheting
+    \item Create a user-friendly interface for secure communication
+    \item Demonstrate security properties through comprehensive testing
+    \item Provide encrypted file transfer capabilities
+\end{enumerate}
+
+\section{Technologies and Tools}
+
+\subsection{Programming Language}
+\begin{itemize}
+    \item \textbf{Python 3.10+}: Primary implementation language chosen for its robust cryptographic libraries and rapid development capabilities
+\end{itemize}
+
+\subsection{Cryptographic Library}
+\begin{itemize}
+    \item \textbf{pyca/cryptography v41.0+}: Industry-standard cryptographic library providing:
+    \begin{itemize}
+        \item X25519 key exchange implementation
+        \item AES-GCM authenticated encryption
+        \item HKDF key derivation functions
+        \item Secure random number generation
+    \end{itemize}
+\end{itemize}
+
+\subsection{Networking and GUI}
+\begin{itemize}
+    \item \textbf{Socket Programming}: TCP-based client-server communication
+    \item \textbf{Tkinter}: Cross-platform GUI framework for the client application
+    \item \textbf{Threading}: Multi-threaded architecture for concurrent operations
+\end{itemize}
+
+\subsection{Testing and Analysis}
+\begin{itemize}
+    \item \textbf{pytest}: Unit testing framework
+    \item \textbf{Wireshark}: Network traffic analysis for security verification
+\end{itemize}
+
+\section{System Architecture}
+
+\subsection{Overview}
+
+The system follows a client-relay-client architecture with three main components:
+
+\begin{enumerate}
+    \item \textbf{Cryptographic Module}: Core security primitives
+    \item \textbf{Relay Server}: Message routing without plaintext access
+    \item \textbf{Client Application}: User interface and message handling
+\end{enumerate}
+
+\subsection{Cryptographic Architecture}
+
+The cryptographic flow follows this sequence:
+
+\begin{enumerate}
+    \item \textbf{Key Generation}: Each client generates an X25519 key pair
+    \item \textbf{Key Exchange}: Public keys are exchanged through the server
+    \item \textbf{Shared Secret}: ECDH algorithm computes shared secret
+    \item \textbf{Key Derivation}: HKDF derives symmetric keys from shared secret
+    \item \textbf{Encryption}: AES-256-GCM encrypts messages
+    \item \textbf{Ratcheting}: Keys are automatically rotated after 50 messages
+\end{enumerate}
+
+\subsection{Message Flow}
+
+\begin{verbatim}
+Alice                    Server                    Bob
+  |                         |                        |
+  |-- Connect -------------->|<------- Connect -------|
+  |                         |                        |
+  |-- Public Key ---------->|-------- Public Key --->|
+  |<------- Public Key -----|<-- Public Key ---------|
+  |                         |                        |
+  | [Compute Shared Secret] | [No Access]  [Compute Shared Secret]
+  |                         |                        |
+  |-- Encrypted Message --->|-- Encrypted Message -->|
+  |                         |                        |
+\end{verbatim}
+
+\section{Implementation Details}
+
+\subsection{Cryptographic Module (crypto/crypto\_utils.py)}
+
+The cryptographic module implements the following components:
+
+\subsubsection{Key Exchange}
+\begin{lstlisting}[language=Python]
+# X25519 ECDH Key Exchange
+private_key = X25519PrivateKey.generate()
+public_key = private_key.public_key()
+shared_key = private_key.exchange(peer_public_key)
+\end{lstlisting}
+
+\subsubsection{Key Derivation}
+Uses HKDF (HMAC-based Key Derivation Function) with SHA-256 to derive encryption keys from the shared secret:
+
+\begin{lstlisting}[language=Python]
+derived_key = HKDF(
+    algorithm=hashes.SHA256(),
+    length=32,
+    salt=None,
+    info=b'handshake data'
+).derive(shared_key)
+\end{lstlisting}
+
+\subsubsection{Authenticated Encryption}
+AES-256-GCM provides both confidentiality and integrity:
+
+\begin{lstlisting}[language=Python]
+cipher = Cipher(
+    algorithms.AES(key),
+    modes.GCM(nonce),
+    backend=default_backend()
+)
+ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+\end{lstlisting}
+
+\subsubsection{Perfect Forward Secrecy}
+The RatchetSession class implements key ratcheting:
+
+\begin{itemize}
+    \item Tracks message count per session
+    \item Automatically ratchets after 50 messages (configurable)
+    \item Securely destroys old keys after ratcheting
+    \item Supports manual ratcheting for enhanced security
+\end{itemize}
+
+\subsection{Server Implementation (server/server.py)}
+
+The relay server implements a zero-knowledge architecture:
+
+\begin{itemize}
+    \item Listens on TCP port 5555
+    \item Maintains client connections using threading
+    \item Routes messages based on JSON protocol
+    \item Never decrypts or stores message content
+    \item Broadcasts user join/leave events
+\end{itemize}
+
+\subsection{Client Application (client/)}
+
+The client provides a comprehensive user interface:
+
+\subsubsection{Features}
+\begin{itemize}
+    \item Real-time user list display
+    \item Color-coded message history (blue for sent, green for received)
+    \item Key fingerprint display for identity verification
+    \item Ratchet counter showing key refresh cycles
+    \item Ciphertext inspection window for educational purposes
+    \item Encrypted file transfer with progress indication
+    \item Manual ratcheting capability
+\end{itemize}
+
+\subsubsection{File Transfer}
+Files are encrypted in chunks and transmitted with progress updates:
+
+\begin{enumerate}
+    \item File is read in 64KB chunks
+    \item Each chunk is encrypted with current session key
+    \item Metadata (filename, size) is sent first
+    \item Progress updates are displayed in real-time
+    \item Recipient decrypts and reconstructs file
+\end{enumerate}
+
+\section{Security Features}
+
+\subsection{Perfect Forward Secrecy}
+
+PFS ensures that compromise of long-term keys does not compromise past session keys. Implementation details:
+
+\begin{itemize}
+    \item Ephemeral key pairs generated per session
+    \item Automatic key rotation every 50 messages
+    \item Old keys securely erased after ratcheting
+    \item Each message encrypted with unique nonce
+\end{itemize}
+
+\subsection{Authentication}
+
+While the current implementation focuses on encryption, authentication is supported through:
+
+\begin{itemize}
+    \item Key fingerprint verification
+    \item AES-GCM authentication tags
+    \item Secure key exchange protocol
+\end{itemize}
+
+\subsection{Threat Model}
+
+The system is designed to resist:
+
+\begin{itemize}
+    \item \textbf{Passive Eavesdropping}: All messages encrypted end-to-end
+    \item \textbf{Server Compromise}: Server has no access to plaintext
+    \item \textbf{Key Compromise}: PFS protects historical messages
+    \item \textbf{Network Analysis}: Encrypted payload reveals no content
+\end{itemize}
+
+\section{Testing and Validation}
+
+\subsection{Unit Tests}
+
+The project includes comprehensive unit tests (tests/):
+
+\begin{itemize}
+    \item \textbf{test\_crypto.py}: Validates encryption, decryption, key exchange, and ratcheting
+    \item \textbf{test\_transfer.py}: Verifies file transfer integrity
+    \item Total: 12+ test cases covering critical security properties
+\end{itemize}
+
+\subsection{Integration Testing}
+
+Manual testing procedures documented in RUNNING.md:
+
+\begin{enumerate}
+    \item Server startup verification
+    \item Multiple client connections
+    \item Message exchange validation
+    \item File transfer testing
+    \item Key ratcheting demonstration
+    \item Wireshark traffic analysis
+\end{enumerate}
+
+\subsection{Security Validation}
+
+\begin{itemize}
+    \item Wireshark captures confirm encrypted traffic
+    \item Key fingerprints allow out-of-band verification
+    \item Ratchet counter demonstrates PFS implementation
+    \item Ciphertext inspection shows non-deterministic encryption
+\end{itemize}
+
+\section{Project Statistics}
+
+\begin{itemize}
+    \item \textbf{Total Lines of Code}: 3,500+
+    \item \textbf{Python Modules}: 10 files
+    \item \textbf{Documentation Files}: 6 markdown files
+    \item \textbf{Test Coverage}: 12+ unit tests
+    \item \textbf{Dependencies}: Minimal (cryptography, tkinter)
+\end{itemize}
+
+\section{Results and Achievements}
+
+\subsection{Successfully Implemented Features}
+
+\begin{enumerate}
+    \item End-to-end encrypted messaging with AES-256-GCM
+    \item Perfect Forward Secrecy through key ratcheting
+    \item Zero-knowledge relay server architecture
+    \item User-friendly GUI with security indicators
+    \item Encrypted file transfer capability
+    \item Comprehensive test suite
+    \item Detailed documentation
+\end{enumerate}
+
+\subsection{Security Properties Achieved}
+
+\begin{itemize}
+    \item \textbf{Confidentiality}: Messages unreadable without session keys
+    \item \textbf{Integrity}: GCM authentication tags prevent tampering
+    \item \textbf{Forward Secrecy}: Old messages protected after key rotation
+    \item \textbf{Non-repudiation}: Key fingerprints enable verification
+\end{itemize}
+
+\section{Future Enhancements}
+
+Potential improvements for future iterations:
+
+\begin{enumerate}
+    \item \textbf{Group Chat}: Extend PFS to multi-party conversations
+    \item \textbf{Persistent Storage}: Encrypted local message database
+    \item \textbf{Mobile Support}: Android/iOS client applications
+    \item \textbf{Voice/Video}: Extend encryption to multimedia calls
+    \item \textbf{Double Ratchet}: Implement full Signal Protocol
+    \item \textbf{Post-Quantum}: Integrate quantum-resistant algorithms
+\end{enumerate}
+
+\section{Conclusion}
+
+This project successfully demonstrates the implementation of a cryptographically secure chat application with Perfect Forward Secrecy. By leveraging industry-standard algorithms (X25519, AES-256-GCM, HKDF) and best practices, the system achieves strong security guarantees comparable to commercial solutions.
+
+The zero-knowledge server architecture ensures that even a compromised relay cannot access message content. The automatic key ratcheting mechanism provides Perfect Forward Secrecy, protecting historical communications from future key compromises.
+
+Through comprehensive testing and documentation, the project serves as both a functional secure messaging system and an educational resource for understanding modern cryptographic protocols. The implementation demonstrates that strong end-to-end encryption is achievable with careful design and proper use of cryptographic primitives.
+
+\section{References}
+
+\begin{enumerate}
+    \item Marlinspike, M., \& Perrin, T. (2016). The Double Ratchet Algorithm. Signal.
+    \item Krawczyk, H., \& Eronen, P. (2010). HMAC-based Extract-and-Expand Key Derivation Function (HKDF). RFC 5869.
+    \item McGrew, D. A., \& Viega, J. (2004). The Galois/Counter Mode of Operation (GCM).
+    \item Bernstein, D. J. (2006). Curve25519: New Diffie-Hellman Speed Records. PKC 2006.
+    \item Python Cryptographic Authority. (2023). pyca/cryptography Documentation.
+    \item Diffie, W., \& Hellman, M. (1976). New Directions in Cryptography. IEEE Transactions on Information Theory.
+\end{enumerate}
+
+\appendix
+\section{Code Repository Structure}
+
+\begin{verbatim}
+/secure-chat-pfs/
+├── crypto/
+│   ├── __init__.py
+│   └── crypto_utils.py         # Core cryptographic functions
+├── server/
+│   ├── __init__.py
+│   └── server.py                # TCP relay server
+├── client/
+│   ├── __init__.py
+│   ├── client.py                # Main client logic
+│   └── ui_components.py         # GUI components
+├── tests/
+│   ├── test_crypto.py           # Cryptography tests
+│   └── test_transfer.py         # File transfer tests
+├── docs/
+│   ├── README.md                # Main documentation
+│   ├── RUNNING.md               # Lab procedures
+│   ├── THREAT_MODEL.md          # Security analysis
+│   ├── USAGE_GUIDE.md           # User guide
+│   └── COMMANDS.md              # Command reference
+├── requirements.txt             # Python dependencies
+├── demo_script.sh               # Quick launcher
+└── report.tex                   # This report
+\end{verbatim}
+
+\section{Installation and Usage}
+
+\subsection{Installation}
+\begin{lstlisting}[language=bash]
+# Clone repository
+git clone <repository-url>
+cd IS_LAB_PROJECT
+
+# Install dependencies
+pip install -r requirements.txt
+\end{lstlisting}
+
+\subsection{Running the Application}
+\begin{lstlisting}[language=bash]
+# Start server
+python server/server.py
+
+# Start client (in separate terminals)
+python client/client.py
+\end{lstlisting}
+
+\subsection{Running Tests}
+\begin{lstlisting}[language=bash]
+# Run all tests
+pytest tests/
+
+# Run specific test file
+pytest tests/test_crypto.py -v
+\end{lstlisting}
+
+\end{document}

@@ -120,6 +120,8 @@ class ClientHandler:
             self.handle_list_groups()
         elif msg_type == 'group_key_exchange':
             self.handle_group_key_exchange(message)
+        elif msg_type == 'group_file_chunk':
+            self.handle_group_file_chunk(message)
         else:
             print(f"[SERVER] Unknown message type: {msg_type}")
     
@@ -250,6 +252,15 @@ class ClientHandler:
         recipient = message.get('to')
         print(f"[SERVER] Forwarding group key: {self.username} -> {recipient}")
         self.server.route_message(recipient, message)
+
+    def handle_group_file_chunk(self, message: Dict):
+        """Broadcast encrypted file chunk to all group members."""
+        group_id = message.get('group_id')
+        sender = message.get('from')
+        chunk_num = message.get('chunk_num', 0)
+
+        print(f"[SERVER] Broadcasting group file chunk {chunk_num}: {sender} -> group {group_id}")
+        self.server.broadcast_to_group(group_id, message, exclude=sender)
     
     def send_message(self, message: Dict):
         """Send JSON message to this client."""
